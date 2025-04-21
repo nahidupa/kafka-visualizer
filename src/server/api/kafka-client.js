@@ -1,4 +1,16 @@
 const kafkaConfig = require('../../config/kafka');
+const crypto = require('crypto');
+
+// helpers for complex record
+function generateRandomId() {
+  return crypto.randomBytes(4).toString('hex');
+}
+function createComplexRecord(payload) {
+  const record = { id: generateRandomId(), payload, ts: Date.now() };
+  // 25% chance to mark as corrupted
+  if (Math.random() < 0.25) record.corrupted = true;
+  return record;
+}
 
 class KafkaSimulator {
   constructor(config) {
@@ -6,8 +18,10 @@ class KafkaSimulator {
     this.consumers = [];
     this.clientId = config.clientId;
     this.config = config;
-    
+    this.deadLetterTopic = config.deadLetterTopic || 'dead-letter';
     this.createTopic(config.topic, config.partitions);
+    // Dead-letter topic with single partition
+    this.createTopic(this.deadLetterTopic, 1);
   }
 
   createTopic(topic, partitions = 3) {
@@ -20,11 +34,21 @@ class KafkaSimulator {
       return Math.floor(Math.random() * numPartitions);
     }
     
-    const hash = String(key).split('').reduce((acc, char) => {
-      return (acc * 31 + char.charCodeAt(0)) & 0x7fffffff;
-    }, 0);
+    // Direct mapping for demo country codes
+    const keyStr = String(key);
+    if (keyStr === 'US') return 0;
+    if (keyStr === 'FR') return 1;
+    if (keyStr === 'DE') return 2;
     
-    return hash % numPartitions;
+    // Fallback for other keys
+    let hash = 0;
+    for (let i = 0; i < keyStr.length; i++) {
+      const char = keyStr.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    
+    return Math.abs(hash) % numPartitions;
   }
 }
 
@@ -188,15 +212,20 @@ async function connectConsumer() {
   console.log('Consumer connected and subscribed to topic (simulated)');
 }
 
-async function produceMessage(key, value, topic = kafkaConfig.topic) {
-  console.log(`Producing message: key=${key}, value=${value}, topic=${topic}`);
+// Predefined keys set
+const COUNTRY_CODES = ['US', 'FR', 'DE'];
+async function produceMessage(_, value, topic = kafkaConfig.topic) {
+  // choose random country code key
+  const key = COUNTRY_CODES[Math.floor(Math.random() * COUNTRY_CODES.length)];
+  // build complex record payload
+  const record = createComplexRecord(value);
   const { results } = await producer.send({
     topic,
-    messages: [{ key, value }],
+    messages: [{ key, value: record }],
   });
   // return the first message metadata for UI
   const { partition, offset } = results[0];
-  return { topic, partition, key, value, offset };
+  return { topic, partition, key, value: record, offset };
 }
 
 async function consumeMessages(callback) {
@@ -284,6 +313,19 @@ function commitSingleMessage(topic) {
   const list = pendingPeeks[topic] || [];
   if (list.length === 0) return null;
   const record = list.shift();
+  // handle corrupted -> send to dead-letter
+  if (record.value && record.value.corrupted) {
+    // Add to dead letter topic (partition 0 since DLQ has only one partition)
+    simulator.topics[simulator.deadLetterTopic][0].push({
+      key: record.key,
+      value: record.value,
+      originalPartition: record.partition,
+      originalTopic: topic,
+      timestamp: Date.now(),
+      reason: 'corrupted'
+    });
+    record.deadLetter = true;
+  }
   consumer.offsets[topic][record.partition] = record.offset + 1;
   return record;
 }
@@ -291,11 +333,28 @@ function commitSingleMessage(topic) {
 // Commit all peeked messages in batch
 function commitBatchMessages(topic) {
   const list = pendingPeeks[topic] || [];
+  const results = [];
+  
   list.forEach(record => {
+    // handle corrupted -> send to dead-letter
+    if (record.value && record.value.corrupted) {
+      // Add to dead letter topic (partition 0 since DLQ has only one partition)
+      simulator.topics[simulator.deadLetterTopic][0].push({
+        key: record.key,
+        value: record.value,
+        originalPartition: record.partition,
+        originalTopic: topic,
+        timestamp: Date.now(),
+        reason: 'corrupted'
+      });
+      record.deadLetter = true;
+    }
     consumer.offsets[topic][record.partition] = record.offset + 1;
+    results.push(record);
   });
+  
   pendingPeeks[topic] = [];
-  return list;
+  return results;
 }
 
 // Get current consumer group status for a topic

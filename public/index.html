@@ -9,6 +9,12 @@
 <body>
     <div id="app">
         <h1>Kafka Visualizer</h1>
+        <!-- Bulk and scenario controls -->
+        <div class="control-panel">
+          <button id="auto-produce-25">Auto Produce 25</button>
+          <button id="single-scenario">Single Commit Scenario</button>
+          <button id="batch-scenario">Batch Commit Scenario</button>
+        </div>
         <div id="partition-visualization"></div>
         <div class="control-panel">
             <input type="text" id="message-input" placeholder="Enter message">
@@ -34,20 +40,13 @@
             <tbody></tbody>
           </table>
         </div>
+        <!-- Dead-Letter Queue Panel -->
+        <div id="dead-letter-panel" class="output-panel" style="display:none;">
+          <h2>Dead-Letter Queue</h2>
+          <div id="dead-letter-messages"></div>
+        </div>
     </div>
     <script src="/socket.io/socket.io.js"></script>
     <script type="module" src="js/app.js"></script>
-    <script>
-        socket.emit('consume', { topic: 'visualization-topic' });
-
-        socket.on('consumeResult', (data) => {
-          if (data.error) {
-            outCon.innerHTML += `<p>Error: ${data.error}</p>`;
-          } else {
-            // make sure you’re referencing data.value and data.partition
-            outCon.innerHTML += `<p>← Got "${data.value}" from p${data.partition}</p>`;
-          }
-        });
-    </script>
 </body>
 </html>
