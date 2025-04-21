@@ -188,12 +188,15 @@ async function connectConsumer() {
   console.log('Consumer connected and subscribed to topic (simulated)');
 }
 
-async function produceMessage(key, value) {
-  console.log(`Producing message: key=${key}, value=${value}`);
-  await producer.send({
-    topic: kafkaConfig.topic,
+async function produceMessage(key, value, topic = kafkaConfig.topic) {
+  console.log(`Producing message: key=${key}, value=${value}, topic=${topic}`);
+  const { results } = await producer.send({
+    topic,
     messages: [{ key, value }],
   });
+  // return the first message metadata for UI
+  const { partition, offset } = results[0];
+  return { topic, partition, key, value, offset };
 }
 
 async function consumeMessages(callback) {

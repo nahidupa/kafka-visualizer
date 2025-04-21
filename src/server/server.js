@@ -43,8 +43,12 @@ async function startServer() {
       // Handle message production
       socket.on('produce', async ({ key, value, topic }) => {
         try {
-          await kafkaClient.produceMessage(key, value, topic);
-          socket.emit('produceSuccess', { key, value });
+          // produce and get metadata
+          const result = await kafkaClient.produceMessage(key, value, topic);
+          // notify producer
+          socket.emit('produceSuccess', result);
+          // broadcast to all clients for visualization
+          io.emit('message', result);
         } catch (error) {
           socket.emit('produceError', { error: error.message });
         }
