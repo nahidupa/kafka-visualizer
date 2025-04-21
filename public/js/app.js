@@ -40,9 +40,17 @@ export function setupPartitions(count, containerEl) {
   }
 }
 
+// Add sequence counter for message ordering demonstration
+let messageSequence = 0;
+
 // Generate a random message value (for demo)
 function generateRandomMessage() {
-  return Math.random().toString(36).substr(2, 8);
+  messageSequence++;
+  const products = ['Apple', 'Banana', 'Orange', 'Mango', 'Pear'];
+  const actions = ['ordered', 'shipped', 'delivered', 'returned', 'canceled'];
+  const product = products[Math.floor(Math.random() * products.length)];
+  const action = actions[Math.floor(Math.random() * actions.length)];
+  return `${product} ${action} #${messageSequence}`;
 }
 
 // Visualize a message in a partition
@@ -92,6 +100,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const commitBtn = document.getElementById('commit-button');
   const consumerOut = document.getElementById('consumer-output');
   const commitRadios = document.querySelectorAll('input[name="commitMode"]');
+  
+  // Initialize message input with random message
+  msgIn.value = generateRandomMessage();
+  
+  // Generate new random message when input is focused while empty
+  msgIn.addEventListener('focus', () => {
+    if (!msgIn.value.trim()) {
+      msgIn.value = generateRandomMessage();
+    }
+  });
   
   let commitMode = 'single';
   commitRadios.forEach(radio => {
@@ -244,6 +262,147 @@ document.addEventListener('DOMContentLoaded', () => {
     deadLetterMessages.appendChild(el);
   });
 
+  // Add scenario button handlers
+  const singleScenarioBtn = document.getElementById('single-scenario');
+  const batchScenarioBtn = document.getElementById('batch-scenario');
+  
+  // Single commit scenario (produce 25 messages, then peek + commit one by one)
+  singleScenarioBtn.addEventListener('click', () => {
+    // Reset sequence counter for demo clarity
+    messageSequence = 0;
+    
+    // Clear previous output
+    consumerOut.innerHTML = '<p><strong>Single Commit Scenario Started</strong></p>';
+    consumerOut.style.display = 'block';
+    
+    // Step 1: Produce 25 messages
+    let produced = 0;
+    const produceInterval = setInterval(() => {
+      if (produced >= 25) {
+        clearInterval(produceInterval);
+        consumerOut.innerHTML += '<p>Production complete. Starting single commits...</p>';
+        
+        // Step 2: Start consuming one by one with single commits
+        consumeSingleMessages();
+        return;
+      }
+      
+      const value = generateRandomMessage();
+      socket.emit('produce', { 
+        key: ['US', 'FR', 'DE'][Math.floor(Math.random() * 3)], // Use country codes
+        value, 
+        topic: 'visualization-topic' 
+      });
+      
+      produced++;
+    }, 100);
+  });
+  
+  // Consume messages one by one with single commits
+  function consumeSingleMessages(count = 0) {
+    if (count >= 25) {
+      consumerOut.innerHTML += '<p><strong>Single Commit Scenario Complete</strong></p>';
+      return;
+    }
+    
+    // Peek next message
+    socket.emit('peek', { topic: 'visualization-topic' });
+    
+    // Wait for peek result then commit
+    socket.once('peekResult', (data) => {
+      if (data.error) {
+        consumerOut.innerHTML += `<p>Scenario ended: ${data.error}</p>`;
+        return;
+      }
+      
+      // Commit the peeked message
+      socket.emit('commitSingle', { topic: 'visualization-topic' });
+      
+      // Wait for commit result then continue
+      socket.once('commitSingleResult', (result) => {
+        setTimeout(() => consumeSingleMessages(count + 1), 200);
+      });
+    });
+  }
+  
+  // Batch commit scenario (produce 25 messages, peek all, then batch commit)
+  batchScenarioBtn.addEventListener('click', () => {
+    // Reset sequence counter for demo clarity
+    messageSequence = 0;
+    
+    // Clear previous output
+    consumerOut.innerHTML = '<p><strong>Batch Commit Scenario Started</strong></p>';
+    consumerOut.style.display = 'block';
+    
+    // Step 1: Produce 25 messages
+    let produced = 0;
+    const produceInterval = setInterval(() => {
+      if (produced >= 25) {
+        clearInterval(produceInterval);
+        consumerOut.innerHTML += '<p>Production complete. Starting batch peek...</p>';
+        
+        // Step 2: Peek all messages
+        peekAllMessages();
+        return;
+      }
+      
+      const value = generateRandomMessage();
+      socket.emit('produce', { 
+        key: ['US', 'FR', 'DE'][Math.floor(Math.random() * 3)], // Use country codes
+        value, 
+        topic: 'visualization-topic' 
+      });
+      
+      produced++;
+    }, 100);
+  });
+  
+  // Peek all messages before committing in batch
+  function peekAllMessages(count = 0) {
+    if (count >= 25) {
+      consumerOut.innerHTML += '<p>All messages peeked. Committing in batch...</p>';
+      
+      // Commit all peeked messages in batch
+      setTimeout(() => {
+        socket.emit('commitBatch', { topic: 'visualization-topic' });
+        
+        socket.once('commitBatchResult', (result) => {
+          if (result.error) {
+            consumerOut.innerHTML += `<p>Batch commit error: ${result.error}</p>`;
+          } else {
+            const goodCount = (result.records || []).filter(r => !r.deadLetter).length;
+            const badCount = (result.records || []).filter(r => r.deadLetter).length;
+            
+            consumerOut.innerHTML += `<p><strong>Batch Commit Complete:</strong> ${goodCount} successful, ${badCount} to dead-letter queue</p>`;
+          }
+        });
+      }, 500);
+      
+      return;
+    }
+    
+    // Peek next message
+    socket.emit('peek', { topic: 'visualization-topic' });
+    
+    // Wait for peek result then continue peeking
+    socket.once('peekResult', (data) => {
+      if (data.error) {
+        consumerOut.innerHTML += `<p>Peeking ended: ${data.error}</p>`;
+        
+        // If we can't peek any more messages, commit what we have
+        if (count > 0) {
+          setTimeout(() => {
+            socket.emit('commitBatch', { topic: 'visualization-topic' });
+          }, 500);
+        }
+        
+        return;
+      }
+      
+      setTimeout(() => peekAllMessages(count + 1), 100);
+    });
+  }
+
   // Handle incoming messages from server
   socket.on('message', ({ partition, key, value, offset }) => {
     console.log(`Received message for partition ${partition}:`, { key, value, offset });
@@ -297,22 +456,35 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusPanel = document.getElementById('consumer-status');
     const statusTableBody = document.querySelector('#status-table tbody');
     statusPanel.style.display = 'block';
+    
     // handle status updates
     socket.on('statusResult', (data) => {
       if (data.error) {
-        statusTableBody.innerHTML = `<tr><td colspan=\"3\">Error: ${data.error}</td></tr>`;
+        statusTableBody.innerHTML = `<tr><td colspan=\"4\">Error: ${data.error}</td></tr>`;
       } else {
-        statusTableBody.innerHTML = data.partitions.map(p => 
-          `<tr>
-            <td>${p.partition}</td>
-            <td>${p.committedOffset}</td>
-            <td>${p.pendingCount}</td>
-          </tr>`
-        ).join('');
+        statusTableBody.innerHTML = data.partitions.map(p => {
+          // Determine status text and color
+          let status = 'Up to date';
+          let statusClass = 'status-ok';
+          
+          if (p.pendingCount > 0) {
+            status = `${p.pendingCount} message(s) peeked`;
+            statusClass = 'status-pending';
+          }
+          
+          return `<tr>
+            <td>Partition ${p.partition}</td>
+            <td>${p.committedOffset} message(s)</td>
+            <td>${p.pendingCount > 0 ? `<span class="pending-count">${p.pendingCount}</span>` : '0'}</td>
+            <td><span class="${statusClass}">${status}</span></td>
+          </tr>`;
+        }).join('');
       }
     });
+    
     // request status every 2 seconds
     setInterval(() => socket.emit('getStatus', { topic: 'visualization-topic' }), 2000);
+    
     // initial status request
     socket.emit('getStatus', { topic: 'visualization-topic' });
   })();
