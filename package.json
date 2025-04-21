@@ -1,0 +1,27 @@
+{
+  "name": "kafka-visualizer",
+  "version": "1.0.0",
+  "description": "A Kafka visualizer project demonstrating message production, consumption, and partitioning.",
+  "main": "src/server/server.js",
+  "scripts": {
+    "start": "node src/server/server.js",
+    "dev": "nodemon src/server/server.js"
+  },
+  "dependencies": {
+    "express": "^4.17.1",
+    "socket.io": "^4.0.0",
+    "dotenv": "^10.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.7"
+  },
+  "keywords": [
+    "kafka",
+    "visualizer",
+    "nodejs",
+    "express",
+    "socket.io"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
