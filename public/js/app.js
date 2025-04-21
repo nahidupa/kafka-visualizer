@@ -1,4 +1,3 @@
-// filepath: /kafka-visualizer/kafka-visualizer/public/js/app.js
 import { fadeIn, fadeOut } from './animation.js';
 
 // At the beginning of your file after imports
@@ -95,20 +94,74 @@ document.addEventListener('DOMContentLoaded', () => {
   // UI elements
   const msgIn = document.getElementById('message-input');
   const prodBtn = document.getElementById('produce-button');
-  const outPro = document.getElementById('producer-output');
   const peekBtn = document.getElementById('peek-button');
   const commitBtn = document.getElementById('commit-button');
   const consumerOut = document.getElementById('consumer-output');
   const commitRadios = document.querySelectorAll('input[name="commitMode"]');
+  const messageDetailsPopup = document.getElementById('message-details-popup');
+  const detailsContent = document.querySelector('#message-details-popup .details-content');
   
   // Initialize message input with random message
   msgIn.value = generateRandomMessage();
   
-  // Generate new random message when input is focused while empty
+  // Message details popup functionality
+  function showMessageDetails(message) {
+    const { key, value, partition, offset } = message;
+    
+    // Format the message details for display
+    let formattedDetails = `Key: ${key || 'null'}\n`;
+    formattedDetails += `Partition: ${partition}\n`;
+    formattedDetails += `Offset: ${offset}\n\n`;
+    
+    // Add formatted payload
+    if (value) {
+      if (value.payload) {
+        formattedDetails += `Payload: ${value.payload}\n`;
+      }
+      if (value.id) {
+        formattedDetails += `ID: ${value.id}\n`;
+      }
+      if (value.ts) {
+        const date = new Date(value.ts);
+        formattedDetails += `Timestamp: ${date.toLocaleString()}\n`;
+      }
+      if (value.corrupted) {
+        formattedDetails += `\n⚠️ CORRUPTED MESSAGE ⚠️`;
+      }
+    } else {
+      formattedDetails += `Value: ${value}\n`;
+    }
+    
+    // Update popup content and show it
+    detailsContent.textContent = formattedDetails;
+    messageDetailsPopup.style.display = 'block';
+  }
+  
+  // Close popup when clicking the close button
+  document.querySelector('#message-details-popup .close-btn')
+    .addEventListener('click', () => {
+      messageDetailsPopup.style.display = 'none';
+    });
+  
+  // Close popup when clicking outside (optional)
+  window.addEventListener('click', (e) => {
+    if (e.target !== messageDetailsPopup && 
+        !messageDetailsPopup.contains(e.target) && 
+        !e.target.classList.contains('message-box')) {
+      messageDetailsPopup.style.display = 'none';
+    }
+  });
+  
+  // Generate new random message when input is focused or clicked
   msgIn.addEventListener('focus', () => {
     if (!msgIn.value.trim()) {
       msgIn.value = generateRandomMessage();
     }
+  });
+  
+  // Also generate when clicked, for better UX
+  msgIn.addEventListener('click', () => {
+    msgIn.value = generateRandomMessage();
   });
   
   let commitMode = 'single';
@@ -122,9 +175,7 @@ document.addEventListener('DOMContentLoaded', () => {
   prodBtn.addEventListener('click', () => {
     const value = msgIn.value.trim() || generateRandomMessage();
     socket.emit('produce', { key: null, value, topic: 'visualization-topic' });
-    outPro.innerHTML += `<p>→ Produced: "${value}"</p>`;
-    outPro.scrollTop = outPro.scrollHeight;
-    msgIn.value = '';
+    msgIn.value = generateRandomMessage();
   });
 
   // Peek message handler
@@ -140,17 +191,33 @@ document.addEventListener('DOMContentLoaded', () => {
       consumerOut.innerHTML = `<p class="error">Error: ${data.error}</p>`;
       commitBtn.disabled = true;
     } else {
-      consumerOut.innerHTML = `<p class="peek-msg">Peeked message from partition ${data.partition}:
-        <span class="msg-key">${data.key}</span> → 
-        <span class="msg-value">${JSON.stringify(data.value)}</span>
-        ${data.value?.corrupted ? '<span class="corrupted-flag">CORRUPTED</span>' : ''}
-      </p>`;
+      // Create message display similar to partition visualization
+      const msgEl = document.createElement('div');
+      msgEl.className = 'message-box peeked';
+      msgEl.setAttribute('data-key', data.key);
+      msgEl.textContent = data.key || 'null';
+      
+      // Handle corrupted messages
+      if (data.value && data.value.corrupted) {
+        msgEl.classList.add('corrupted');
+      }
+      
+      // Add click handler to show details
+      msgEl.addEventListener('click', () => showMessageDetails(data));
+      
+      // Add to consumer output
+      const peekMsg = document.createElement('div');
+      peekMsg.className = 'peek-msg';
+      peekMsg.innerHTML = '<strong>Peeked message:</strong> ';
+      peekMsg.appendChild(msgEl);
+      
+      consumerOut.innerHTML = '';
+      consumerOut.appendChild(peekMsg);
       commitBtn.disabled = false;
       
       // Highlight the peeked message in the partition
       const partitionEl = document.getElementById(`partition-${data.partition}`);
       if (partitionEl) {
-        // Find message at correct offset
         const messages = partitionEl.querySelectorAll('.message-box');
         const targetMsg = Array.from(messages).find(msg => 
           parseInt(msg.getAttribute('data-offset')) === data.offset
@@ -179,20 +246,56 @@ document.addEventListener('DOMContentLoaded', () => {
     if (data.error) {
       consumerOut.innerHTML += `<p class="error">Error: ${data.error}</p>`;
     } else {
-      consumerOut.innerHTML += `<p class="commit-msg">
-        Committed message from partition ${data.partition}
-        ${data.deadLetter ? ' (moved to dead-letter queue)' : ''}
-      </p>`;
+      // Create a container for the commit result
+      const commitMsg = document.createElement('div');
+      commitMsg.className = 'commit-msg';
       
+      // Add message boxes using the same style as partitions
+      const msgEl = document.createElement('div');
+      msgEl.className = 'message-box committed';
+      msgEl.setAttribute('data-key', data.key);
+      
+      if (data.value && data.value.corrupted) {
+        msgEl.classList.add('corrupted');
+      }
+      
+      msgEl.textContent = data.key || 'null';
+      
+      // Add click handler to show details
+      msgEl.addEventListener('click', () => showMessageDetails(data));
+      
+      // Add message to commit message container
+      commitMsg.innerHTML = `<strong>Committed:</strong> `;
+      commitMsg.appendChild(msgEl);
+      
+      // Add to consumer output
+      consumerOut.appendChild(commitMsg);
       commitBtn.disabled = true;
       
-      // Notify if this was moved to dead-letter
-      if (data.value && data.value.corrupted) {
+      // Handle dead letter queue display
+      if (data.deadLetter || (data.value && data.value.corrupted)) {
+        const deadLetterPanel = document.getElementById('dead-letter-panel');
+        const deadLetterMessages = document.getElementById('dead-letter-messages');
+        
         deadLetterPanel.style.display = 'block';
+        
+        // Create a message in the dead letter queue with the same styling
         const dlMsg = document.createElement('div');
         dlMsg.className = 'dead-letter-msg';
-        dlMsg.innerHTML = `Key: ${data.key}, Partition: ${data.partition}, 
-                          Reason: Corrupted, Value: ${JSON.stringify(data.value)}`;
+        
+        const dlEl = document.createElement('div');
+        dlEl.className = 'message-box corrupted';
+        dlEl.setAttribute('data-key', data.key);
+        dlEl.textContent = data.key || 'null';
+        
+        // Add click handler for details
+        dlEl.addEventListener('click', () => showMessageDetails({
+          ...data,
+          deadLetterReason: 'Corrupted message'
+        }));
+        
+        dlMsg.appendChild(document.createTextNode('Dead Letter: '));
+        dlMsg.appendChild(dlEl);
         deadLetterMessages.appendChild(dlMsg);
       }
     }
@@ -208,25 +311,70 @@ document.addEventListener('DOMContentLoaded', () => {
       const goodCount = data.records.filter(r => !r.deadLetter).length;
       const badCount = data.records.filter(r => r.deadLetter).length;
       
-      consumerOut.innerHTML += `<p class="commit-msg">
-        Batch committed ${data.records.length} messages:
-        ${goodCount} successful, ${badCount} to dead-letter queue
-      </p>`;
+      // Create batch commit container
+      const batchMsg = document.createElement('div');
+      batchMsg.className = 'commit-msg batch-commit';
+      batchMsg.innerHTML = `<strong>Batch committed ${data.records.length} messages:</strong><br>`;
       
-      commitBtn.disabled = true;
+      // Create a container for the message boxes
+      const msgContainer = document.createElement('div');
+      msgContainer.className = 'message-container';
       
-      // Add any dead-letter messages
-      if (badCount > 0) {
-        deadLetterPanel.style.display = 'block';
+      // Add each message as a message box
+      data.records.forEach(record => {
+        const msgEl = document.createElement('div');
+        msgEl.className = 'message-box committed';
+        msgEl.setAttribute('data-key', record.key);
         
-        data.records.filter(r => r.deadLetter).forEach(record => {
+        if (record.deadLetter || (record.value && record.value.corrupted)) {
+          msgEl.classList.add('corrupted');
+        }
+        
+        msgEl.textContent = record.key || 'null';
+        
+        // Add click handler to show details
+        msgEl.addEventListener('click', () => showMessageDetails(record));
+        
+        msgContainer.appendChild(msgEl);
+        
+        // Handle dead letter queue for corrupted records
+        if (record.deadLetter || (record.value && record.value.corrupted)) {
+          const deadLetterPanel = document.getElementById('dead-letter-panel');
+          const deadLetterMessages = document.getElementById('dead-letter-messages');
+          
+          deadLetterPanel.style.display = 'block';
+          
+          // Create a message in the dead letter queue with the same styling
           const dlMsg = document.createElement('div');
           dlMsg.className = 'dead-letter-msg';
-          dlMsg.innerHTML = `Key: ${record.key}, Partition: ${record.partition}, 
-                            Reason: Corrupted, Value: ${JSON.stringify(record.value)}`;
+          
+          const dlEl = document.createElement('div');
+          dlEl.className = 'message-box corrupted';
+          dlEl.setAttribute('data-key', record.key);
+          dlEl.textContent = record.key || 'null';
+          
+          // Add click handler for details
+          dlEl.addEventListener('click', () => showMessageDetails({
+            ...record,
+            deadLetterReason: 'Corrupted message in batch'
+          }));
+          
+          dlMsg.appendChild(document.createTextNode('Dead Letter: '));
+          dlMsg.appendChild(dlEl);
           deadLetterMessages.appendChild(dlMsg);
-        });
-      }
+        }
+      });
+      
+      // Add summary message
+      const summary = document.createElement('div');
+      summary.className = 'batch-summary';
+      summary.textContent = `${goodCount} successful, ${badCount} to dead-letter queue`;
+      
+      batchMsg.appendChild(msgContainer);
+      batchMsg.appendChild(summary);
+      consumerOut.appendChild(batchMsg);
+      
+      commitBtn.disabled = true;
     } else {
       consumerOut.innerHTML += `<p class="commit-msg">No messages to commit in batch</p>`;
     }
@@ -234,174 +382,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Refresh status
     socket.emit('getStatus', { topic: 'visualization-topic' });
   });
-
-  // Demo/auto produce button
-  const autoProduce = document.getElementById('auto-produce-25');
-  autoProduce.addEventListener('click', () => {
-    let count = 25;
-    const interval = setInterval(() => {
-      const randomKey = Math.floor(Math.random() * 5); // 0-4 for demo key-based routing
-      const randomValue = generateRandomMessage();
-      socket.emit('produce', { 
-        key: randomKey.toString(),
-        value: randomValue,
-        topic: 'visualization-topic'
-      });
-      count--;
-      if (count === 0) clearInterval(interval);
-    }, 100);
-  });
-
-  // Show dead-letter messages when emitted
-  const deadLetterPanel = document.getElementById('dead-letter-panel');
-  const deadLetterMessages = document.getElementById('dead-letter-messages');
-  socket.on('deadLetterMessage', (data) => {
-    deadLetterPanel.style.display = 'block';
-    const el = document.createElement('div');
-    el.innerText = `DL p${data.partition}: ${JSON.stringify(data.value)}`;
-    deadLetterMessages.appendChild(el);
-  });
-
-  // Add scenario button handlers
-  const singleScenarioBtn = document.getElementById('single-scenario');
-  const batchScenarioBtn = document.getElementById('batch-scenario');
-  
-  // Single commit scenario (produce 25 messages, then peek + commit one by one)
-  singleScenarioBtn.addEventListener('click', () => {
-    // Reset sequence counter for demo clarity
-    messageSequence = 0;
-    
-    // Clear previous output
-    consumerOut.innerHTML = '<p><strong>Single Commit Scenario Started</strong></p>';
-    consumerOut.style.display = 'block';
-    
-    // Step 1: Produce 25 messages
-    let produced = 0;
-    const produceInterval = setInterval(() => {
-      if (produced >= 25) {
-        clearInterval(produceInterval);
-        consumerOut.innerHTML += '<p>Production complete. Starting single commits...</p>';
-        
-        // Step 2: Start consuming one by one with single commits
-        consumeSingleMessages();
-        return;
-      }
-      
-      const value = generateRandomMessage();
-      socket.emit('produce', { 
-        key: ['US', 'FR', 'DE'][Math.floor(Math.random() * 3)], // Use country codes
-        value, 
-        topic: 'visualization-topic' 
-      });
-      
-      produced++;
-    }, 100);
-  });
-  
-  // Consume messages one by one with single commits
-  function consumeSingleMessages(count = 0) {
-    if (count >= 25) {
-      consumerOut.innerHTML += '<p><strong>Single Commit Scenario Complete</strong></p>';
-      return;
-    }
-    
-    // Peek next message
-    socket.emit('peek', { topic: 'visualization-topic' });
-    
-    // Wait for peek result then commit
-    socket.once('peekResult', (data) => {
-      if (data.error) {
-        consumerOut.innerHTML += `<p>Scenario ended: ${data.error}</p>`;
-        return;
-      }
-      
-      // Commit the peeked message
-      socket.emit('commitSingle', { topic: 'visualization-topic' });
-      
-      // Wait for commit result then continue
-      socket.once('commitSingleResult', (result) => {
-        setTimeout(() => consumeSingleMessages(count + 1), 200);
-      });
-    });
-  }
-  
-  // Batch commit scenario (produce 25 messages, peek all, then batch commit)
-  batchScenarioBtn.addEventListener('click', () => {
-    // Reset sequence counter for demo clarity
-    messageSequence = 0;
-    
-    // Clear previous output
-    consumerOut.innerHTML = '<p><strong>Batch Commit Scenario Started</strong></p>';
-    consumerOut.style.display = 'block';
-    
-    // Step 1: Produce 25 messages
-    let produced = 0;
-    const produceInterval = setInterval(() => {
-      if (produced >= 25) {
-        clearInterval(produceInterval);
-        consumerOut.innerHTML += '<p>Production complete. Starting batch peek...</p>';
-        
-        // Step 2: Peek all messages
-        peekAllMessages();
-        return;
-      }
-      
-      const value = generateRandomMessage();
-      socket.emit('produce', { 
-        key: ['US', 'FR', 'DE'][Math.floor(Math.random() * 3)], // Use country codes
-        value, 
-        topic: 'visualization-topic' 
-      });
-      
-      produced++;
-    }, 100);
-  });
-  
-  // Peek all messages before committing in batch
-  function peekAllMessages(count = 0) {
-    if (count >= 25) {
-      consumerOut.innerHTML += '<p>All messages peeked. Committing in batch...</p>';
-      
-      // Commit all peeked messages in batch
-      setTimeout(() => {
-        socket.emit('commitBatch', { topic: 'visualization-topic' });
-        
-        socket.once('commitBatchResult', (result) => {
-          if (result.error) {
-            consumerOut.innerHTML += `<p>Batch commit error: ${result.error}</p>`;
-          } else {
-            const goodCount = (result.records || []).filter(r => !r.deadLetter).length;
-            const badCount = (result.records || []).filter(r => r.deadLetter).length;
-            
-            consumerOut.innerHTML += `<p><strong>Batch Commit Complete:</strong> ${goodCount} successful, ${badCount} to dead-letter queue</p>`;
-          }
-        });
-      }, 500);
-      
-      return;
-    }
-    
-    // Peek next message
-    socket.emit('peek', { topic: 'visualization-topic' });
-    
-    // Wait for peek result then continue peeking
-    socket.once('peekResult', (data) => {
-      if (data.error) {
-        consumerOut.innerHTML += `<p>Peeking ended: ${data.error}</p>`;
-        
-        // If we can't peek any more messages, commit what we have
-        if (count > 0) {
-          setTimeout(() => {
-            socket.emit('commitBatch', { topic: 'visualization-topic' });
-          }, 500);
-        }
-        
-        return;
-      }
-      
-      setTimeout(() => peekAllMessages(count + 1), 100);
-    });
-  }
 
   // Handle incoming messages from server
   socket.on('message', ({ partition, key, value, offset }) => {
@@ -427,27 +407,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Display just the key in the box
     msgEl.textContent = key || 'null';
     
-    // Add tooltip with full details
-    const tooltip = document.createElement('div');
-    tooltip.className = 'tooltip';
+    // Add click handler to show details
+    msgEl.addEventListener('click', () => {
+      showMessageDetails({ partition, key, value, offset });
+    });
     
-    // Format payload data for display
-    let payloadStr = 'undefined';
-    if (value && value.payload) {
-      payloadStr = typeof value.payload === 'object' 
-        ? JSON.stringify(value.payload) 
-        : value.payload;
-    }
-    
-    tooltip.innerHTML = `
-      <strong>Key:</strong> ${key || 'null'}<br>
-      <strong>Payload:</strong> ${payloadStr}<br>
-      <strong>ID:</strong> ${value?.id || 'n/a'}<br>
-      <strong>Offset:</strong> ${offset || 'n/a'}<br>
-      ${value?.corrupted ? '<strong style="color:#f44336">CORRUPTED</strong>' : ''}
-    `;
-    
-    msgEl.appendChild(tooltip);
     partitionEl.appendChild(msgEl);
   });
 
@@ -488,4 +452,158 @@ document.addEventListener('DOMContentLoaded', () => {
     // initial status request
     socket.emit('getStatus', { topic: 'visualization-topic' });
   })();
+
+  // Add scenario button handlers
+  const autoProduceBtn = document.getElementById('auto-produce-25');
+  const singleScenarioBtn = document.getElementById('single-scenario');
+  const batchScenarioBtn = document.getElementById('batch-scenario');
+  const deadLetterPanel = document.getElementById('dead-letter-panel');
+  const deadLetterMessages = document.getElementById('dead-letter-messages');
+  
+  // Auto-produce 25 messages
+  autoProduceBtn?.addEventListener('click', () => {
+    console.log('Auto producing 25 messages');
+    let count = 25;
+    const interval = setInterval(() => {
+      if (count <= 0) {
+        clearInterval(interval);
+        return;
+      }
+      
+      const value = generateRandomMessage();
+      const key = ['US', 'FR', 'DE'][Math.floor(Math.random() * 3)];
+      socket.emit('produce', { key, value, topic: 'visualization-topic' });
+      
+      count--;
+    }, 100);
+  });
+  
+  // Single commit scenario
+  singleScenarioBtn?.addEventListener('click', () => {
+    // Reset sequence counter for demo clarity
+    messageSequence = 0;
+    console.log('Running single commit scenario');
+    
+    // Clear previous output
+    consumerOut.innerHTML = '<p><strong>Single Commit Scenario Started</strong></p>';
+    consumerOut.style.display = 'block';
+    
+    // Step 1: Produce 25 messages
+    let produced = 0;
+    const produceInterval = setInterval(() => {
+      if (produced >= 25) {
+        clearInterval(produceInterval);
+        consumerOut.innerHTML += '<p>Production complete. Starting single commits...</p>';
+        
+        // Step 2: Start consuming one by one with single commits
+        consumeSingleMessages();
+        return;
+      }
+      
+      const value = generateRandomMessage();
+      socket.emit('produce', { 
+        key: ['US', 'FR', 'DE'][Math.floor(Math.random() * 3)], // Use country codes
+        value, 
+        topic: 'visualization-topic' 
+      });
+      
+      produced++;
+    }, 100);
+  });
+  
+  // Helper function for single commit scenario
+  function consumeSingleMessages(count = 0) {
+    if (count >= 25) {
+      consumerOut.innerHTML += '<p><strong>Single Commit Scenario Complete</strong></p>';
+      return;
+    }
+    
+    // Peek next message
+    socket.emit('peek', { topic: 'visualization-topic' });
+    
+    // Wait for peek result then commit
+    socket.once('peekResult', (data) => {
+      if (data.error) {
+        consumerOut.innerHTML += `<p>Scenario ended: ${data.error}</p>`;
+        return;
+      }
+      
+      // Commit the peeked message
+      setTimeout(() => {
+        socket.emit('commitSingle', { topic: 'visualization-topic' });
+        
+        // Wait for commit result then continue
+        socket.once('commitSingleResult', (result) => {
+          setTimeout(() => consumeSingleMessages(count + 1), 300);
+        });
+      }, 200);
+    });
+  }
+  
+  // Batch commit scenario
+  batchScenarioBtn?.addEventListener('click', () => {
+    // Reset sequence counter for demo clarity
+    messageSequence = 0;
+    console.log('Running batch commit scenario');
+    
+    // Clear previous output
+    consumerOut.innerHTML = '<p><strong>Batch Commit Scenario Started</strong></p>';
+    consumerOut.style.display = 'block';
+    
+    // Step 1: Produce 25 messages
+    let produced = 0;
+    const produceInterval = setInterval(() => {
+      if (produced >= 25) {
+        clearInterval(produceInterval);
+        consumerOut.innerHTML += '<p>Production complete. Starting batch peek...</p>';
+        
+        // Step 2: Peek all messages
+        peekAllMessages();
+        return;
+      }
+      
+      const value = generateRandomMessage();
+      socket.emit('produce', { 
+        key: ['US', 'FR', 'DE'][Math.floor(Math.random() * 3)], // Use country codes
+        value, 
+        topic: 'visualization-topic' 
+      });
+      
+      produced++;
+    }, 100);
+  });
+  
+  // Helper function for batch commit scenario
+  function peekAllMessages(count = 0) {
+    if (count >= 25) {
+      consumerOut.innerHTML += '<p>All messages peeked. Committing in batch...</p>';
+      
+      // Commit all peeked messages in batch
+      setTimeout(() => {
+        socket.emit('commitBatch', { topic: 'visualization-topic' });
+      }, 500);
+      
+      return;
+    }
+    
+    // Peek next message
+    socket.emit('peek', { topic: 'visualization-topic' });
+    
+    // Wait for peek result then continue peeking
+    socket.once('peekResult', (data) => {
+      if (data.error) {
+        consumerOut.innerHTML += `<p>Peeking ended: ${data.error}</p>`;
+        
+        // If we can't peek any more messages, commit what we have
+        if (count > 0) {
+          setTimeout(() => {
+            socket.emit('commitBatch', { topic: 'visualization-topic' });
+          }, 500);
+        }
+        return;
+      }
+      
+      setTimeout(() => peekAllMessages(count + 1), 100);
+    });
+  }
 });

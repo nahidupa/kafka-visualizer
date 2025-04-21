@@ -9,18 +9,24 @@
 <body>
     <div id="app">
         <h1>Kafka Visualizer</h1>
-        <!-- Bulk and scenario controls -->
-        <div class="control-panel">
-          <button id="auto-produce-25">Auto Produce 25</button>
-          <button id="single-scenario">Single Commit Scenario</button>
-          <button id="batch-scenario">Batch Commit Scenario</button>
+        
+        <!-- Unified Control Panel -->
+        <div class="main-control-panel">
+            <div class="input-group">
+                <input type="text" id="message-input" placeholder="Enter message">
+                <button id="produce-button">Produce</button>
+            </div>
+            <div class="scenario-buttons">
+                <button id="auto-produce-25">Auto Produce 25</button>
+                <button id="single-scenario">Single Commit Scenario</button>
+                <button id="batch-scenario">Batch Commit Scenario</button>
+            </div>
         </div>
+        
+        <!-- Partition visualization -->
         <div id="partition-visualization"></div>
-        <div class="control-panel">
-            <input type="text" id="message-input" placeholder="Enter message">
-            <button id="produce-button">Produce Message</button>
-        </div>
-        <div id="producer-output" class="output-panel"></div>
+        
+        <!-- Consumer Controls -->
         <div class="control-panel">
             <button id="peek-button">Peek Message</button>
             <div class="commit-controls">
@@ -29,7 +35,10 @@
               <button id="commit-button" disabled>Commit</button>
             </div>
         </div>
+        
+        <!-- Consumer Output - Now shows consumed messages -->
         <div id="consumer-output" class="output-panel" style="display:none;"></div>
+        
         <!-- Consumer Group Status Panel -->
         <div id="consumer-status" class="output-panel" style="display:none;">
           <h2>Consumer Group Status</h2>
@@ -45,10 +54,18 @@
             <tbody></tbody>
           </table>
         </div>
+        
         <!-- Dead-Letter Queue Panel -->
         <div id="dead-letter-panel" class="output-panel" style="display:none;">
           <h2>Dead-Letter Queue</h2>
           <div id="dead-letter-messages"></div>
+        </div>
+        
+        <!-- Message Details Popup -->
+        <div id="message-details-popup">
+            <span class="close-btn">&times;</span>
+            <h3>Message Details</h3>
+            <div class="details-content"></div>
         </div>
     </div>
     <script src="/socket.io/socket.io.js"></script>
