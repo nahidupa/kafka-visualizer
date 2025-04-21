@@ -246,6 +246,58 @@ function fetchNextMessage(topic) {
   return null;
 }
 
+// Pending peeked messages (not yet committed)
+const pendingPeeks = {};
+
+// Peek next message without advancing committed offset
+function peekNextMessage(topic) {
+  const partitions = simulator.topics[topic];
+  if (!partitions) throw new Error(`Topic ${topic} does not exist`);
+
+  // initialize consumer offsets for topic if missing
+  if (!consumer.offsets[topic]) {
+    consumer.offsets[topic] = {};
+    for (let i = 0; i < partitions.length; i++) {
+      consumer.offsets[topic][i] = 0;
+    }
+  }
+
+  // initialize pending list
+  pendingPeeks[topic] = pendingPeeks[topic] || [];
+
+  // find next available in FIFO order
+  for (let partition = 0; partition < partitions.length; partition++) {
+    const offset = consumer.offsets[topic][partition] + pendingPeeks[topic].filter(p => p.partition === partition).length;
+    const messages = partitions[partition];
+    if (offset < messages.length) {
+      const msg = messages[offset];
+      const record = { topic, partition, key: msg.key, value: msg.value, offset };
+      pendingPeeks[topic].push(record);
+      return record;
+    }
+  }
+  return null;
+}
+
+// Commit a single peeked message (the earliest)
+function commitSingleMessage(topic) {
+  const list = pendingPeeks[topic] || [];
+  if (list.length === 0) return null;
+  const record = list.shift();
+  consumer.offsets[topic][record.partition] = record.offset + 1;
+  return record;
+}
+
+// Commit all peeked messages in batch
+function commitBatchMessages(topic) {
+  const list = pendingPeeks[topic] || [];
+  list.forEach(record => {
+    consumer.offsets[topic][record.partition] = record.offset + 1;
+  });
+  pendingPeeks[topic] = [];
+  return list;
+}
+
 module.exports = {
   connectProducer,
   connectConsumer,
@@ -262,5 +314,8 @@ module.exports = {
       messages: partition.length
     }))
   }),
-  fetchNextMessage
+  fetchNextMessage,
+  peekNextMessage,
+  commitSingleMessage,
+  commitBatchMessages
 };

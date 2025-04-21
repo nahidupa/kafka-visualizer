@@ -67,6 +67,36 @@ async function startServer() {
           socket.emit('consumeResult', { error: err.message });
         }
       });
+
+      // Peek without committing offset
+      socket.on('peek', ({ topic }) => {
+        try {
+          const msg = kafkaClient.peekNextMessage(topic);
+          socket.emit('peekResult', msg || { error: 'No available messages' });
+        } catch (err) {
+          socket.emit('peekResult', { error: err.message });
+        }
+      });
+
+      // Commit single message
+      socket.on('commitSingle', ({ topic }) => {
+        try {
+          const rec = kafkaClient.commitSingleMessage(topic);
+          socket.emit('commitSingleResult', rec || { error: 'No messages to commit' });
+        } catch (err) {
+          socket.emit('commitSingleResult', { error: err.message });
+        }
+      });
+
+      // Commit batch messages
+      socket.on('commitBatch', ({ topic }) => {
+        try {
+          const recs = kafkaClient.commitBatchMessages(topic);
+          socket.emit('commitBatchResult', { records: recs });
+        } catch (err) {
+          socket.emit('commitBatchResult', { error: err.message });
+        }
+      });
     });
     
     // Manual consumption only; auto-push disabled

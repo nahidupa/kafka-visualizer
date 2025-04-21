@@ -16,9 +16,14 @@
         </div>
         <div id="producer-output" class="output-panel"></div>
         <div class="control-panel">
-            <button id="consume-button">Consume Message</button>
+            <button id="peek-button">Peek Message</button>
+            <div class="commit-controls">
+              <label><input type="radio" name="commitMode" value="single" checked> Single Commit</label>
+              <label><input type="radio" name="commitMode" value="batch"> Batch Commit</label>
+              <button id="commit-button" disabled>Commit</button>
+            </div>
         </div>
-        <div id="consumer-output" class="output-panel"></div>
+        <div id="consumer-output" class="output-panel" style="display:none;"></div>
     </div>
     <script src="/socket.io/socket.io.js"></script>
     <script type="module" src="js/app.js"></script>
