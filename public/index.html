@@ -24,6 +24,16 @@
             </div>
         </div>
         <div id="consumer-output" class="output-panel" style="display:none;"></div>
+        <!-- Consumer Group Status Panel -->
+        <div id="consumer-status" class="output-panel" style="display:none;">
+          <h2>Consumer Group Status</h2>
+          <table id="status-table">
+            <thead>
+              <tr><th>Partition</th><th>Committed Offset</th><th>Pending Count</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
     </div>
     <script src="/socket.io/socket.io.js"></script>
     <script type="module" src="js/app.js"></script>

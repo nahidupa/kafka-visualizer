@@ -298,6 +298,17 @@ function commitBatchMessages(topic) {
   return list;
 }
 
+// Get current consumer group status for a topic
+function getConsumerStatus(topic) {
+  const partitions = simulator.topics[topic] || [];
+  const status = partitions.map((_, partition) => {
+    const committed = consumer.offsets[topic]?.[partition] ?? 0;
+    const pending = (pendingPeeks[topic] || []).filter(p => p.partition === partition).length;
+    return { partition, committedOffset: committed, pendingCount: pending };
+  });
+  return { topic, partitions: status };
+}
+
 module.exports = {
   connectProducer,
   connectConsumer,
@@ -317,5 +328,6 @@ module.exports = {
   fetchNextMessage,
   peekNextMessage,
   commitSingleMessage,
-  commitBatchMessages
+  commitBatchMessages,
+  getConsumerStatus
 };

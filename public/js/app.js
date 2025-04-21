@@ -101,4 +101,30 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     commitBtn.disabled = true;
   });
+
+  // Auto-refresh consumer group status
+  (function() {
+    const statusPanel = document.getElementById('consumer-status');
+    const statusTableBody = document.querySelector('#status-table tbody');
+    const TOPIC = 'visualization-topic';
+    statusPanel.style.display = 'block';
+    // handle status updates
+    socket.on('statusResult', (data) => {
+      if (data.error) {
+        statusTableBody.innerHTML = `<tr><td colspan=\"3\">Error: ${data.error}</td></tr>`;
+      } else {
+        statusTableBody.innerHTML = data.partitions.map(p => 
+          `<tr>
+            <td>${p.partition}</td>
+            <td>${p.committedOffset}</td>
+            <td>${p.pendingCount}</td>
+          </tr>`
+        ).join('');
+      }
+    });
+    // request status every 2 seconds
+    setInterval(() => socket.emit('getStatus', { topic: TOPIC }), 2000);
+    // initial status request
+    socket.emit('getStatus', { topic: TOPIC });
+  })();
 });

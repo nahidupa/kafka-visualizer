@@ -97,6 +97,16 @@ async function startServer() {
           socket.emit('commitBatchResult', { error: err.message });
         }
       });
+
+      // Provide consumer status on demand
+      socket.on('getStatus', ({ topic }) => {
+        try {
+          const status = kafkaClient.getConsumerStatus(topic);
+          socket.emit('statusResult', status);
+        } catch (err) {
+          socket.emit('statusResult', { error: err.message });
+        }
+      });
     });
     
     // Manual consumption only; auto-push disabled
