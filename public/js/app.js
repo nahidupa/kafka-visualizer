@@ -280,7 +280,13 @@ document.addEventListener('DOMContentLoaded', () => {
       
       // Add to consumer output
       consumerOut.appendChild(commitMsg);
-      commitBtn.disabled = true;
+      
+      // Check for more pending messages before disabling the button
+      socket.emit('getStatus', { topic: 'visualization-topic' }, (statusData) => {
+        const hasPendingMessages = statusData && statusData.partitions && 
+          statusData.partitions.some(p => p.pendingCount > 0);
+        commitBtn.disabled = !hasPendingMessages;
+      });
       
       // Handle dead letter queue display
       if (data.deadLetter || (data.value && data.value.corrupted)) {
@@ -384,7 +390,12 @@ document.addEventListener('DOMContentLoaded', () => {
       batchMsg.appendChild(summary);
       consumerOut.appendChild(batchMsg);
       
-      commitBtn.disabled = true;
+      // Check for more pending messages before disabling the button
+      socket.emit('getStatus', { topic: 'visualization-topic' }, (statusData) => {
+        const hasPendingMessages = statusData && statusData.partitions && 
+          statusData.partitions.some(p => p.pendingCount > 0);
+        commitBtn.disabled = !hasPendingMessages;
+      });
     } else {
       consumerOut.innerHTML += `<p class="commit-msg">No messages to commit in batch</p>`;
     }
