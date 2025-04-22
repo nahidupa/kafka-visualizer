@@ -106,12 +106,21 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Message details popup functionality
   function showMessageDetails(message) {
-    const { key, value, partition, offset } = message;
+    const { key, value, partition, offset, headers } = message;
     
     // Format the message details for display
     let formattedDetails = `Key: ${key || 'null'}\n`;
     formattedDetails += `Partition: ${partition}\n`;
     formattedDetails += `Offset: ${offset}\n\n`;
+    
+    // Display headers if available
+    if (headers && Object.keys(headers).length > 0) {
+      formattedDetails += 'Headers:\n';
+      Object.entries(headers).forEach(([key, value]) => {
+        formattedDetails += `  ${key}: ${value}\n`;
+      });
+      formattedDetails += '\n';
+    }
     
     // Add formatted payload
     if (value) {
@@ -127,6 +136,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (value.corrupted) {
         formattedDetails += `\n⚠️ CORRUPTED MESSAGE ⚠️`;
+        formattedDetails += `\nNote: Dead Letter handling is an application pattern, not a Kafka feature.`;
       }
     } else {
       formattedDetails += `Value: ${value}\n`;
