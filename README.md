@@ -15,28 +15,7 @@ The Kafka Visualizer is a web application that demonstrates how Apache Kafka wor
 - **Interactive Message Details**: Click on any message to see its complete details including Kafka headers.
 - **Demo Scenarios**: Pre-built scenarios to demonstrate single and batch commit behaviors.
 
-## Project Structure
-```
-kafka-visualizer
-├── public
-│   ├── index.html          # Main HTML entry point
-│   ├── css
-│   │   └── styles.css      # Styles for the application
-│   └── js
-│       ├── app.js          # Main JavaScript logic
-│       ├── animation.js    # Animation effects for message visualizations
-│       └── broker.js       # Simulates the Kafka broker
-├── src
-│   ├── config
-│   │   └── kafka.js        # Kafka configuration settings
-│   └── server
-│       ├── api
-│       │   └── kafka-client.js # Simulates the Kafka client
-│       └── server.js       # Sets up the Express server and socket.io connection
-├── .env                     # Environment variables for configuration
-├── package.json             # npm configuration file
-└── README.md                # Project documentation
-```
+
 
 ## Installation
 1. Clone the repository:
@@ -67,6 +46,8 @@ kafka-visualizer
    - **View Message Details**: Click on any message to see its complete details in a popup.
    - **Monitor Consumer Status**: Track offsets and pending messages in the Consumer Group Status panel.
    - **Check Dead Letter Queue**: Corrupted messages are automatically moved to the Dead Letter Queue panel.
+
+![demo](demo.png)
 
 ## How It Works
 - **Key-based Partitioning**: Messages with key "US" go to partition 0, "FR" to partition 1, and "DE" to partition 2.
