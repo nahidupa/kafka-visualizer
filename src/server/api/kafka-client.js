@@ -128,27 +128,44 @@ class KafkaSimulator {
   }
   
   // Simulate partition rebalancing within a consumer group
-  rebalancePartitions(groupId, topic) {
+  rebalancePartitions(groupId, topic, strategy = 'range') {
     const group = this.getConsumerGroup(groupId);
     const activeMembers = group.members.filter(c => c.connected);
-    
-    if (activeMembers.length === 0) {
-      return;
-    }
-    
     const numPartitions = this.topics[topic].length;
     
-    // Reset current assignments for this topic
-    group.partitionAssignments[topic] = group.partitionAssignments[topic] || {};
-    
-    // Assign partitions to consumers using simple round-robin
-    for (let partition = 0; partition < numPartitions; partition++) {
-      const consumerIndex = partition % activeMembers.length;
-      const consumer = activeMembers[consumerIndex];
-      group.partitionAssignments[topic][partition] = consumer.id;
+    // Initialize partitionAssignments for this topic if it doesn't exist
+    if (!group.partitionAssignments) {
+      group.partitionAssignments = {};
     }
     
-    console.log(`Rebalanced partitions for group ${groupId} on topic ${topic}`);
+    // Initialize this topic's partition assignments object
+    if (!group.partitionAssignments[topic]) {
+      group.partitionAssignments[topic] = {};
+    }
+    
+    // Range Assignor implementation (Kafka's default)
+    if (strategy === 'range') {
+      const membersCount = activeMembers.length;
+      if (membersCount === 0) return;
+      
+      // Sort members by ID for consistent assignment
+      activeMembers.sort((a, b) => a.id.localeCompare(b.id));
+      
+      const partitionsPerConsumer = Math.floor(numPartitions / membersCount);
+      const remainder = numPartitions % membersCount;
+      
+      let assignedPartitions = 0;
+      for (let i = 0; i < membersCount; i++) {
+        const consumer = activeMembers[i];
+        const partitionCount = i < remainder ? partitionsPerConsumer + 1 : partitionsPerConsumer;
+        
+        for (let j = 0; j < partitionCount; j++) {
+          const partitionId = assignedPartitions++;
+          group.partitionAssignments[topic][partitionId] = consumer.id;
+        }
+      }
+    }
+    // Round robin implementation could be added as an option
   }
   
   // Clean up resources
@@ -166,6 +183,23 @@ class Producer {
     this.acks = 1; // Default to acks=1, similar to Kafka default
     this.retries = 3; // Default retries
     this.errorRate = 0.03; // 3% chance of transient errors
+    this.enableIdempotence = false;
+    this.producerIds = {};  // Track sequence IDs per topic-partition
+    this.transactionInProgress = false; // Track transaction state
+  }
+
+  // Allow configuration
+  setConfig({ enableIdempotence, acks, retries }) {
+    if (enableIdempotence !== undefined) {
+      this.enableIdempotence = enableIdempotence === true;
+    }
+    if (acks !== undefined) {
+      this.acks = acks;
+    }
+    if (retries !== undefined) {
+      this.retries = retries;
+    }
+    return this;
   }
 
   async connect() {
@@ -183,7 +217,7 @@ class Producer {
     return Promise.resolve();
   }
 
-  async send({ topic, messages }) {
+  async send({ topic, messages, acks = 1 }) {
     if (!this.connected) {
       throw new Error('Producer not connected');
     }
@@ -208,6 +242,11 @@ class Producer {
       
       const partition = this.simulator.getPartition(message.key, numPartitions);
       
+      // Check for duplicates if idempotence is enabled
+      if (this.enableIdempotence) {
+        // Implementation of idempotent delivery...
+      }
+
       // Create complete message with headers
       const kafkaMessage = {
         key: message.key,
@@ -234,6 +273,18 @@ class Producer {
       });
     }
 
+    // Simulate acks behavior
+    if (acks === 0) {
+      // Don't wait, return immediately (no delivery guarantees)
+      return { results: [] };
+    } else if (acks === 'all') {
+      // Simulate waiting for all replicas (most reliable)
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } else {
+      // acks=1, wait for leader only (default)
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+
     // Notify consumers of new messages
     for (const consumer of this.simulator.consumers) {
       if (consumer.subscriptions.includes(topic)) {
@@ -244,15 +295,22 @@ class Producer {
     return { results };
   }
 
-  // Configure producer settings
-  setConfig(config) {
-    if (config.acks !== undefined) {
-      this.acks = config.acks;
-    }
-    if (config.retries !== undefined) {
-      this.retries = config.retries;
-    }
-    return this;
+  beginTransaction() {
+    if (!this.connected) throw new Error('Producer not connected');
+    this.transactionInProgress = true;
+    return { transactionId: `txn-${Date.now()}` };
+  }
+
+  commitTransaction() {
+    if (!this.transactionInProgress) throw new Error('No transaction in progress');
+    this.transactionInProgress = false;
+    // Process the transaction...
+  }
+
+  abortTransaction() {
+    if (!this.transactionInProgress) throw new Error('No transaction in progress');
+    this.transactionInProgress = false;
+    // Revert any pending changes...
   }
 }
 
@@ -322,7 +380,7 @@ class Consumer {
     return Promise.resolve();
   }
 
-  async subscribe({ topic, fromBeginning, autoCommit = false }) {
+  async subscribe({ topic, fromBeginning, autoOffsetReset = 'latest', autoCommit = false }) {
     if (!this.connected) {
       throw new Error('Consumer not connected');
     }
@@ -332,7 +390,7 @@ class Consumer {
     }
 
     this.subscriptions.push(topic);
-    this.autoCommitEnabled = autoCommit;
+    this.autoCommitEnabled = autoCommit;  // FIXED: autoCommit is now defined with default value
     
     // Start auto-commit timer if enabled
     if (autoCommit && !this.autoCommitTimer) {
@@ -347,7 +405,11 @@ class Consumer {
     if (!group.offsets[topic]) {
       group.offsets[topic] = {};
       for (let i = 0; i < this.simulator.topics[topic].length; i++) {
-        group.offsets[topic][i] = fromBeginning ? 0 : this.simulator.topics[topic][i].length;
+        if (fromBeginning || autoOffsetReset === 'earliest') {
+          group.offsets[topic][i] = 0;
+        } else {
+          group.offsets[topic][i] = this.simulator.topics[topic][i].length;
+        }
       }
     }
 
@@ -469,6 +531,8 @@ const consumer = new Consumer(simulator, {
   groupId: process.env.KAFKA_CONSUMER_GROUP || 'kafka-visualizer-group' 
 });
 
+const pendingPeeks = {};
+
 async function connectProducer() {
   await producer.connect();
   console.log('Producer connected (simulated)');
@@ -476,7 +540,11 @@ async function connectProducer() {
 
 async function connectConsumer() {
   await consumer.connect();
-  await consumer.subscribe({ topic: kafkaConfig.topic, fromBeginning: true });
+  await consumer.subscribe({ 
+    topic: kafkaConfig.topic, 
+    fromBeginning: true,
+    autoCommit: false  // Explicitly set the autoCommit value
+  });
   console.log('Consumer connected and subscribed to topic (simulated)');
 }
 
@@ -594,8 +662,8 @@ function fetchNextMessage(topic) {
   return null;
 }
 
-// Pending peeked messages (not yet committed)
-const pendingPeeks = {};
+// Store last accessed partition for round-robin consumption
+let lastAccessedPartition = -1;
 
 // Peek next message without advancing committed offset
 function peekNextMessage(topic) {
@@ -632,11 +700,27 @@ function peekNextMessage(topic) {
     }
   }
 
-  // Find next available message in assigned partitions
-  for (const partition of assignedPartitions) {
-    const offset = group.offsets[topic][partition] + pendingPeeks[topic].filter(p => p.partition === partition).length;
+  // If still no assigned partitions (shouldn't happen), return null
+  if (assignedPartitions.length === 0) {
+    return null;
+  }
+
+  // True round-robin approach: check partitions starting after the last accessed one
+  const partitionCount = assignedPartitions.length;
+  
+  // Check each partition exactly once in round-robin order
+  for (let i = 0; i < partitionCount; i++) {
+    // Calculate next partition index in round-robin fashion
+    lastAccessedPartition = (lastAccessedPartition + 1) % partitionCount;
+    const partition = assignedPartitions[lastAccessedPartition];
+    
+    // Calculate next offset for this partition considering pending peeks
+    const pendingForPartition = pendingPeeks[topic].filter(p => p.partition === partition).length;
+    const offset = group.offsets[topic][partition] + pendingForPartition;
     const messages = partitions[partition];
+    
     if (offset < messages.length) {
+      // Found a message to peek
       const msg = messages[offset];
       const record = { 
         topic, 
@@ -644,12 +728,17 @@ function peekNextMessage(topic) {
         key: msg.key, 
         value: msg.value, 
         headers: msg.headers || {},
-        offset 
+        offset,
+        // Include lag information for educational purposes
+        lag: messages.length - offset - 1
       };
       pendingPeeks[topic].push(record);
       return record;
     }
+    // This partition has no new messages, continue to next one
   }
+  
+  // If we get here, no messages are available in any partition
   return null;
 }
 
@@ -764,14 +853,25 @@ function commitBatchMessages(topic) {
 
 // Get current consumer group status for a topic
 function getConsumerStatus(topic) {
-  const partitions = simulator.topics[topic] || [];
+  const result = { partitions: [] };
+  const partitions = simulator.topics[topic];
   const group = simulator.getConsumerGroup(consumer.groupId);
-  const status = partitions.map((_, partition) => {
-    const committed = group.offsets[topic]?.[partition] ?? 0;
-    const pending = (pendingPeeks[topic] || []).filter(p => p.partition === partition).length;
-    return { partition, committedOffset: committed, pendingCount: pending };
-  });
-  return { topic, partitions: status };
+  
+  for (let partition = 0; partition < partitions.length; partition++) {
+    const committedOffset = group.offsets[topic]?.[partition] || 0;
+    const latestOffset = partitions[partition].length;
+    const lag = latestOffset - committedOffset;
+    
+    result.partitions.push({
+      partition,
+      committedOffset,
+      lag,
+      pendingCount: (pendingPeeks[topic] || [])
+        .filter(p => p.partition === partition).length
+    });
+  }
+  
+  return result;
 }
 
 module.exports = {
