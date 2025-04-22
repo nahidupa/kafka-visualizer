@@ -23,10 +23,32 @@ class KafkaSimulator {
     this.createTopic(config.topic, config.partitions);
     // Dead-letter topic with single partition
     this.createTopic(this.deadLetterTopic, 1);
+    
+    // Configuration values (in ms) - similar to real Kafka defaults
+    this.sessionTimeout = config.sessionTimeout || 10000; // Default 10 seconds
+    this.heartbeatInterval = config.heartbeatInterval || 3000; // Default 3 seconds
+    
+    // Start heartbeat checker
+    this.heartbeatChecker = setInterval(() => this.checkHeartbeats(), this.heartbeatInterval);
+    
+    // Topic configuration defaults
+    this.defaultTopicConfig = {
+      'retention.ms': 604800000, // 7 days
+      'cleanup.policy': 'delete',
+      'min.insync.replicas': 1,
+      'compression.type': 'producer'
+    };
   }
-
-  createTopic(topic, partitions = 3) {
+  
+  createTopic(topic, partitions = 3, config = {}) {
+    // Merge supplied config with defaults
+    const topicConfig = {...this.defaultTopicConfig, ...config};
+    
     this.topics[topic] = Array(partitions).fill().map(() => []);
+    
+    // Store topic configuration
+    this.topics[topic].config = topicConfig;
+    console.log(`Created topic ${topic} with ${partitions} partitions and config:`, topicConfig);
     return true;
   }
 
@@ -58,10 +80,51 @@ class KafkaSimulator {
       this.consumerGroups[groupId] = {
         members: [],
         offsets: {}, // Offsets are now stored at the group level
-        partitionAssignments: {} // Track which consumer owns which partition
+        partitionAssignments: {}, // Track which consumer owns which partition
+        lastHeartbeats: {} // Track last heartbeat time for each member
       };
     }
     return this.consumerGroups[groupId];
+  }
+  
+  // Record heartbeat from a consumer
+  recordHeartbeat(groupId, consumerId) {
+    const group = this.getConsumerGroup(groupId);
+    group.lastHeartbeats[consumerId] = Date.now();
+  }
+  
+  // Check consumer heartbeats and handle timeouts
+  checkHeartbeats() {
+    const now = Date.now();
+    
+    // Check each consumer group
+    Object.entries(this.consumerGroups).forEach(([groupId, group]) => {
+      let needRebalance = false;
+      
+      // Check each member's heartbeat
+      group.members.forEach(consumer => {
+        const lastHeartbeat = group.lastHeartbeats[consumer.id] || 0;
+        
+        // If heartbeat expired and consumer is marked as connected
+        if (now - lastHeartbeat > this.sessionTimeout && consumer.connected) {
+          console.log(`Consumer ${consumer.id} in group ${groupId} timed out`);
+          
+          // Mark consumer as disconnected
+          consumer.connected = false;
+          needRebalance = true;
+        }
+      });
+      
+      // If any consumers timed out, trigger rebalance for all topics
+      if (needRebalance) {
+        const activeConsumer = group.members.find(c => c.connected);
+        if (activeConsumer) {
+          activeConsumer.subscriptions.forEach(topic => {
+            this.rebalancePartitions(groupId, topic);
+          });
+        }
+      }
+    });
   }
   
   // Simulate partition rebalancing within a consumer group
@@ -87,15 +150,30 @@ class KafkaSimulator {
     
     console.log(`Rebalanced partitions for group ${groupId} on topic ${topic}`);
   }
+  
+  // Clean up resources
+  shutdown() {
+    if (this.heartbeatChecker) {
+      clearInterval(this.heartbeatChecker);
+    }
+  }
 }
 
 class Producer {
   constructor(simulator) {
     this.simulator = simulator;
     this.connected = false;
+    this.acks = 1; // Default to acks=1, similar to Kafka default
+    this.retries = 3; // Default retries
+    this.errorRate = 0.03; // 3% chance of transient errors
   }
 
   async connect() {
+    // Simulate network errors on connect
+    if (Math.random() < 0.01) {
+      return Promise.reject(new Error('Connection refused: broker may be down'));
+    }
+    
     this.connected = true;
     return Promise.resolve();
   }
@@ -110,6 +188,11 @@ class Producer {
       throw new Error('Producer not connected');
     }
 
+    // Simulate network errors/timeouts
+    if (Math.random() < this.errorRate) {
+      throw new Error('Network error: request timed out');
+    }
+
     if (!this.simulator.topics[topic]) {
       this.simulator.createTopic(topic);
     }
@@ -118,6 +201,11 @@ class Producer {
     const results = [];
 
     for (const message of messages) {
+      // Simulate serialization errors
+      if (message.value === undefined || message.value === null) {
+        throw new Error('Cannot serialize null or undefined value');
+      }
+      
       const partition = this.simulator.getPartition(message.key, numPartitions);
       
       // Create complete message with headers
@@ -131,16 +219,22 @@ class Producer {
       
       this.simulator.topics[topic][partition].push(kafkaMessage);
 
+      // Simulate leader epoch (used for replication)
+      const leaderEpoch = 0;
+
       results.push({
         topic,
         partition,
         offset: this.simulator.topics[topic][partition].length - 1,
         key: message.key,
         value: message.value,
-        headers: message.headers || {}
+        headers: message.headers || {},
+        timestamp: kafkaMessage.timestamp,
+        leaderEpoch
       });
     }
 
+    // Notify consumers of new messages
     for (const consumer of this.simulator.consumers) {
       if (consumer.subscriptions.includes(topic)) {
         setTimeout(() => consumer.processMessages(topic), 500);
@@ -148,6 +242,17 @@ class Producer {
     }
 
     return { results };
+  }
+
+  // Configure producer settings
+  setConfig(config) {
+    if (config.acks !== undefined) {
+      this.acks = config.acks;
+    }
+    if (config.retries !== undefined) {
+      this.retries = config.retries;
+    }
+    return this;
   }
 }
 
@@ -160,6 +265,11 @@ class Consumer {
     this.subscriptions = [];
     this.callback = null;
     this.simulator.consumers.push(this);
+    this.heartbeatInterval = null;
+    this.autoCommitEnabled = false;
+    this.autoCommitInterval = 5000; // 5 seconds default, like Kafka's default
+    this.autoCommitTimer = null;
+    this.errorRate = 0.05; // Simulate 5% error rate in processing
 
     // Register consumer in the group
     const group = this.simulator.getConsumerGroup(groupId);
@@ -167,20 +277,52 @@ class Consumer {
   }
 
   async connect() {
-    this.connected = true;
-    return Promise.resolve();
+    try {
+      this.connected = true;
+      
+      // Start sending heartbeats
+      this.heartbeatInterval = setInterval(() => {
+        if (this.connected) {
+          this.simulator.recordHeartbeat(this.groupId, this.id);
+          // console.log(`Consumer ${this.id} heartbeat`);
+        }
+      }, 1000); // Send heartbeat every 1 second
+      
+      return Promise.resolve();
+    } catch (err) {
+      // Simulate network errors
+      if (Math.random() < 0.01) { // 1% chance of connection error
+        return Promise.reject(new Error('Connection refused: broker may be down'));
+      }
+      return Promise.resolve();
+    }
   }
 
   async disconnect() {
     this.connected = false;
-    // Trigger rebalancing when consumer disconnects
-    this.subscriptions.forEach(topic => {
-      this.simulator.rebalancePartitions(this.groupId, topic);
-    });
+    
+    // Stop heartbeats
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+    
+    // Stop auto-commit if enabled
+    if (this.autoCommitTimer) {
+      clearInterval(this.autoCommitTimer);
+    }
+    
+    // In real Kafka, rebalancing has a delay and is triggered by missed heartbeats
+    // Here we'll simulate that with a slight delay before triggering rebalance
+    setTimeout(() => {
+      this.subscriptions.forEach(topic => {
+        this.simulator.rebalancePartitions(this.groupId, topic);
+      });
+    }, 1000);
+    
     return Promise.resolve();
   }
 
-  async subscribe({ topic, fromBeginning }) {
+  async subscribe({ topic, fromBeginning, autoCommit = false }) {
     if (!this.connected) {
       throw new Error('Consumer not connected');
     }
@@ -190,6 +332,16 @@ class Consumer {
     }
 
     this.subscriptions.push(topic);
+    this.autoCommitEnabled = autoCommit;
+    
+    // Start auto-commit timer if enabled
+    if (autoCommit && !this.autoCommitTimer) {
+      this.autoCommitTimer = setInterval(() => {
+        if (this.connected) {
+          this._autoCommitOffsets();
+        }
+      }, this.autoCommitInterval);
+    }
     
     const group = this.simulator.getConsumerGroup(this.groupId);
     if (!group.offsets[topic]) {
@@ -199,10 +351,32 @@ class Consumer {
       }
     }
 
+    // Record initial heartbeat
+    this.simulator.recordHeartbeat(this.groupId, this.id);
+    
     // Trigger partition rebalancing
     this.simulator.rebalancePartitions(this.groupId, topic);
 
     return Promise.resolve();
+  }
+  
+  // Simulate auto commit behavior
+  _autoCommitOffsets() {
+    const pendingKeysToRemove = [];
+    
+    // For each topic with pending messages
+    Object.keys(pendingPeeks).forEach(topic => {
+      if (this.subscriptions.includes(topic) && pendingPeeks[topic].length > 0) {
+        // Commit all pending peeks for this topic
+        commitBatchMessages(topic);
+        pendingKeysToRemove.push(topic);
+      }
+    });
+    
+    // Remove committed messages from pending
+    pendingKeysToRemove.forEach(key => {
+      pendingPeeks[key] = [];
+    });
   }
 
   async run({ eachMessage }) {
@@ -232,28 +406,60 @@ class Consumer {
       if (currentOffset < messages.length) {
         const message = messages[currentOffset];
         
-        group.offsets[topic][partition] = currentOffset + 1;
-        
-        await this.callback({
-          topic,
-          partition,
-          message: {
-            key: message.key,
-            value: message.value,
-            headers: message.headers || {}, // Include headers
-            timestamp: message.timestamp,
-            offset: message.offset,
-            toString: () => JSON.stringify(message),
-            key: {
-              toString: () => message.key,
-            },
-            value: {
-              toString: () => message.value,
-            }
+        try {
+          // Simulate random processing errors (real Kafka consumers face these)
+          if (Math.random() < this.errorRate) {
+            throw new Error('Error processing message: serialization failure');
           }
-        });
+          
+          group.offsets[topic][partition] = currentOffset + 1;
+          
+          await this.callback({
+            topic,
+            partition,
+            message: {
+              key: message.key,
+              value: message.value,
+              headers: message.headers || {}, 
+              timestamp: message.timestamp,
+              offset: message.offset,
+              leaderEpoch: 0, // Real Kafka has this for replication tracking
+              toString: () => JSON.stringify(message),
+              key: {
+                toString: () => message.key,
+              },
+              value: {
+                toString: () => message.value,
+              }
+            }
+          });
+          
+        } catch (err) {
+          console.error(`Error processing message: ${err.message}`);
+          // In real Kafka, the consumer would decide whether to continue, retry, or 
+          // move message to dead letter queue based on the error
+        }
       }
     }
+  }
+  
+  // Kafka consumers can manually commit offsets
+  async commitOffset({ topic, partition, offset }) {
+    const group = this.simulator.getConsumerGroup(this.groupId);
+    
+    if (!group.offsets[topic]) {
+      group.offsets[topic] = {};
+    }
+    
+    // Kafka only allows committing offsets for partitions assigned to this consumer
+    if (group.partitionAssignments[topic]?.[partition] !== this.id) {
+      throw new Error(`Cannot commit offset for partition ${partition} - not assigned to this consumer`);
+    }
+    
+    // Update the offset
+    group.offsets[topic][partition] = offset + 1; // +1 because Kafka commits the next offset to read
+    
+    return { topic, partition, offset: offset + 1 };
   }
 }
 
@@ -487,8 +693,9 @@ function commitBatchMessages(topic) {
   const results = [];
   const group = simulator.getConsumerGroup(consumer.groupId);
   
-  // Note: In real Kafka, batch commits are atomic per partition
-  // But internally messages are still processed per partition
+  if (list.length === 0) {
+    return results;
+  }
   
   // Group pending messages by partition for proper batch commit behavior
   const partitionCommits = {};
@@ -497,21 +704,22 @@ function commitBatchMessages(topic) {
     partitionCommits[record.partition].push(record);
   });
 
-  // Process each partition's batch of messages
+  // Process each partition's batch of messages separately (important Kafka behavior)
   Object.keys(partitionCommits).forEach(partition => {
+    const partitionNumber = parseInt(partition, 10);
     const partitionRecords = partitionCommits[partition];
-    // Sort by offset to ensure proper ordering
+    
+    // Sort by offset to ensure proper ordering within partition
     partitionRecords.sort((a, b) => a.offset - b.offset);
     
-    // Find highest offset in this partition's batch
-    const highestOffset = Math.max(...partitionRecords.map(r => r.offset));
+    // In a real Kafka consumer, we might have message processing failures
+    // that would cause some messages to be skipped, but all offsets up to
+    // the highest successful one would be committed
+    let highestProcessedOffset = -1;
     
-    // Commit up to the highest offset
-    group.offsets[topic][partition] = highestOffset + 1;
-    
-    // Process each record (e.g., handle corrupted messages)
-    partitionRecords.forEach(record => {
-      // Note: Dead Letter Queue handling is an application-level pattern, not a Kafka feature
+    // Process each record in order
+    for (const record of partitionRecords) {
+      // Simulate processing the message
       if (record.value && record.value.corrupted) {
         // Add to dead letter topic with proper headers
         simulator.topics[simulator.deadLetterTopic][0].push({
@@ -533,11 +741,24 @@ function commitBatchMessages(topic) {
         record.deadLetter = true;
       }
       
+      // Track the highest successfully processed offset
+      highestProcessedOffset = record.offset;
+      
+      // Add to results
       results.push(record);
-    });
+    }
+    
+    // Only update the committed offset if we processed at least one message
+    if (highestProcessedOffset >= 0) {
+      // In Kafka, we commit the NEXT offset to consume
+      group.offsets[topic][partitionNumber] = highestProcessedOffset + 1;
+    }
   });
   
+  // Clear all pending records after committing
   pendingPeeks[topic] = [];
+  
+  // Return the list of processed messages
   return results;
 }
 
